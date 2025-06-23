@@ -8,8 +8,6 @@ dependencies = [
   "torch",
   "torchvision",
   "lightning",
-  "matplotlib>=3.10.3",
-  "numpy>=2.3.1",
 ]
 
 [tool.uv.sources]

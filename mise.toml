@@ -6,3 +6,6 @@ python.uv_venv_auto = true
 
 [tasks.build]
 run = "uv build"
+
+[tasks.sync]
+run = "uv sync && uv pip install ./wheels/*"

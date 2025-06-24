@@ -8,6 +8,8 @@ dependencies = [
   "torch",
   "torchvision",
   "lightning",
+  "numpy<2.0.0",
+  "tensorboard>=2.19.0",
 ]
 
 [tool.uv.sources]

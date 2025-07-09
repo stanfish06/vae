@@ -1,7 +1,8 @@
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from torch.distributions import Independent, Normal
+from torch.distributions import Independent, NegativeBinomial
 
 pl.seed_everything(42)
 torch.backends.cudnn.deterministic = True
@@ -14,8 +15,7 @@ class Encoder(nn.Module):
         self.input_dim = input_dim
         self.condition_dim = condition_dim
         self.latent_dim = latent_dim
-        combined_input_dim = input_dim + condition_dim
-        self.FC_input = nn.Linear(combined_input_dim, hidden_dim)
+        self.FC_input = nn.Linear(input_dim + condition_dim, hidden_dim)
         self.FC_hidden = nn.Linear(hidden_dim + condition_dim, hidden_dim)
         self.FC_mean = nn.Linear(hidden_dim, latent_dim)
         self.FC_var = nn.Linear(hidden_dim, latent_dim)
@@ -23,20 +23,18 @@ class Encoder(nn.Module):
         self.dropout = nn.Dropout(0.1)
         self.batch_norm = nn.BatchNorm1d(hidden_dim, momentum=0.01, eps=0.001)
         self.batch_norm_input = nn.BatchNorm1d(input_dim, momentum=0.01, eps=0.001)
-        self.layer_norm = nn.LayerNorm(hidden_dim, elementwise_affine=True)
 
     def forward(self, x, c):
         # x_norm = self.batch_norm_input(x)
         x_norm = self.batch_norm_input(x)
-        x_c = torch.cat([x_norm, c], dim=1)
         _h = self.dropout(
-            self.activation_fn(self.layer_norm(self.batch_norm(self.FC_input(x_c))))
+            self.activation_fn(
+                self.batch_norm(self.FC_input(torch.concat([x_norm, c], dim=1)))
+            )
         )
         h = self.dropout(
             self.activation_fn(
-                self.layer_norm(
-                    self.batch_norm(self.FC_hidden(torch.concat([_h, c], dim=1)))
-                )
+                self.batch_norm(self.FC_hidden(torch.concat([_h, c], dim=1)))
             )
         )
         mean = self.FC_mean(h)
@@ -49,41 +47,40 @@ class Decoder(nn.Module):
     def __init__(self, output_dim, condition_dim, hidden_dim, latent_dim):
         super(Decoder, self).__init__()
         self.latent_dim = latent_dim
-        combined_latent_dim = latent_dim + condition_dim
-        self.FC_latent = nn.Linear(combined_latent_dim, hidden_dim)
+        self.FC_latent = nn.Linear(latent_dim + condition_dim, hidden_dim)
         self.FC_hidden = nn.Linear(hidden_dim + condition_dim, hidden_dim)
         self.FC_output_mean = nn.Linear(hidden_dim, output_dim)
-        self.FC_output_var = nn.Linear(hidden_dim, output_dim)
+        self.log_theta = nn.Parameter(torch.zeros(output_dim))
         self.activation_fn = nn.LeakyReLU(0.2)
         self.dropout = nn.Dropout(0.1)
         self.batch_norm = nn.BatchNorm1d(hidden_dim, momentum=0.01, eps=0.001)
-        self.layer_norm = nn.LayerNorm(hidden_dim, elementwise_affine=True)
 
     def forward(self, x, c):
-        x_c = torch.cat([x, c], dim=1)
         _h = self.dropout(
-            self.activation_fn(self.layer_norm(self.batch_norm(self.FC_latent(x_c))))
+            self.activation_fn(
+                self.batch_norm(self.FC_latent(torch.concat([x, c], dim=1)))
+            )
         )
         h = self.dropout(
             self.activation_fn(
-                self.layer_norm(
-                    self.batch_norm(self.FC_hidden(torch.concat([_h, c], dim=1)))
-                )
+                self.batch_norm(self.FC_hidden(torch.concat([_h, c], dim=1)))
             )
         )
-        x_hat = self.FC_output_mean(h)
-        log_var_x_hat = self.FC_output_var(h)
+        log_x_hat = self.FC_output_mean(h)
+        log_theta = self.log_theta.expand(log_x_hat.size(0), -1)
 
-        return x_hat, log_var_x_hat
+        return log_x_hat, log_theta
 
 
 class HVAE(pl.LightningModule):
-    def __init__(self, Encoder, Decoder, nLeapFrog, LeapFrogStep, Temp0):
+    def __init__(self, Encoder, Decoder, nLeapFrog, LeapFrogStep, Temp0, lr, beta):
         super().__init__()
         self.Encoder = Encoder
         self.Decoder = Decoder
         self.nLeapFrog = nLeapFrog
         self.LeapFrogStep = LeapFrogStep
+        self.lr = lr
+        self.beta = beta
         self.Temp0 = (
             Temp0  # temp0 is just the standard deviation of auxiliary variables
         )
@@ -100,9 +97,17 @@ class HVAE(pl.LightningModule):
     def _dU_dz(self, z, x, c):
         z = z.requires_grad_(True)
 
-        x_hat, log_var_x_hat = self.Decoder(z, c)
-        sigma_x = torch.exp(0.5 * log_var_x_hat)
-        pxz = Independent(Normal(x_hat, sigma_x), 1)
+        log_x_hat, log_theta = self.Decoder(z, c)
+        theta = torch.exp(log_theta)
+        # Clamp for numerical stability
+        log_x_hat = torch.clamp(log_x_hat, max=1e8)
+        theta = torch.clamp(theta, min=1e-8, max=1e8)
+        log_theta = torch.clamp(log_theta, max=1e8)
+        # Parameterization for Negative Binomial
+        # total_count = theta, probs = theta / (theta + x_hat)
+        pxz = Independent(
+            NegativeBinomial(total_count=theta, logits=log_x_hat - log_theta), 1
+        )
         reconst_NLL = -pxz.log_prob(x)
         prior_NLL = 0.5 * torch.sum(z**2, dim=-1)
 
@@ -119,41 +124,91 @@ class HVAE(pl.LightningModule):
         z_0 = self.reparameterization(mean_z, torch.exp(0.5 * log_var_z))
         p_0 = self.Temp0 * torch.randn_like(z_0)
         (z_k, p_k) = self._his(z_0, p_0, x, c)
-        x_hat, log_var_x_hat = self.Decoder(z_k, c)
-        return (x_hat, log_var_x_hat, mean_z, log_var_z, z_k, p_k)
+        log_x_hat, log_theta = self.Decoder(z_k, c)
+        return (log_x_hat, log_theta, mean_z, log_var_z, z_k, p_k)
 
     # ELBO
-    def loss(self, x, x_hat, log_var_x_hat, mean_z, log_var_z, z_k, p_k):
+    def loss(self, x, log_x_hat, log_theta, mean_z, log_var_z, z_k, p_k):
         # reconstruction NLL
-        sigma_x = torch.exp(0.5 * log_var_x_hat)
-        pxz = Independent(Normal(x_hat, sigma_x), 1)
+        theta = torch.exp(log_theta)
+        # Clamp for numerical stability
+        log_x_hat = torch.clamp(log_x_hat, max=1e8)
+        theta = torch.clamp(theta, min=1e-8, max=1e8)
+        log_theta = torch.clamp(log_theta, max=1e8)
+        # Parameterization for Negative Binomial
+        # total_count = theta, probs = theta / (theta + x_hat)
+        pxz = Independent(
+            NegativeBinomial(total_count=theta, logits=log_x_hat - log_theta), 1
+        )
         NLL_x = -pxz.log_prob(x)  # shape: (batch,)
 
-        # KL term between q(z|x) and p(z)
+        # negative KL term between q(z|x) and p(z)
         latent_entropy_posterior = torch.sum(0.5 * log_var_z, dim=-1)
         NLL_z_prior = -0.5 * torch.sum(z_k * z_k, dim=-1)
         NLL_p_prior = -0.5 * torch.sum(p_k * p_k, dim=-1)
 
         return (
             NLL_x
-            + latent_entropy_posterior
-            + NLL_z_prior
-            + NLL_p_prior
-            + self.Encoder.latent_dim
+            - self.beta
+            * (
+                latent_entropy_posterior
+                + NLL_z_prior
+                + NLL_p_prior
+                + self.Encoder.latent_dim
+            )
         ).mean()
 
     def training_step(self, batch, batch_idx):
         x, c = batch
-        x_hat, log_var_x_hat, mean_z, log_var_z, z_k, p_k = self.forward(x, c)
-        loss = self.loss(x, x_hat, log_var_x_hat, mean_z, log_var_z, z_k, p_k)
+        log_x_hat, log_theta, mean_z, log_var_z, z_k, p_k = self.forward(x, c)
+        loss = self.loss(x, log_x_hat, log_theta, mean_z, log_var_z, z_k, p_k)
         values = {"loss": loss}
         self.log_dict(values, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
 
 if __name__ == "__main__":
-    pass
+    input_dim = 10
+    condition_dim = 2
+    hidden_dim = 20
+    latent_dim = 5
+    output_dim = 10
+    n_obs = 10
+
+    np.random.seed(42)
+    x = torch.from_numpy(np.random.rand(n_obs, input_dim).astype(np.float32))
+    np.random.seed(88)
+    c = np.random.binomial(n=1, p=0.4, size=n_obs)
+    c = torch.from_numpy(np.vstack([c, np.logical_not(c)]).T.astype(np.float32))
+    m = HVAE(
+        Encoder=Encoder(
+            input_dim=input_dim,
+            condition_dim=condition_dim,
+            hidden_dim=hidden_dim,
+            latent_dim=latent_dim,
+        ),
+        Decoder=Decoder(
+            output_dim=output_dim,
+            condition_dim=condition_dim,
+            hidden_dim=hidden_dim,
+            latent_dim=latent_dim,
+        ),
+        nLeapFrog=10,
+        LeapFrogStep=0.01,
+        Temp0=1,
+        lr=1e-4,
+        beta=1,
+    )
+    # test potential gradient
+    np.random.seed(1)
+    x_hat, log_theta, mean_z, log_var_z, z_k, p_k = m.forward(x, c)
+    loss = m.loss(x, x_hat, log_theta, mean_z, log_var_z, z_k, p_k)
+    print(f"loss : {loss}")
+    z_0 = m.reparameterization(mean_z, torch.exp(0.5 * log_var_z))
+    print(m._dU_dz(z_0, x, c))
+    p_0 = m.Temp0 * torch.randn_like(z_0)
+    print(m._his(z_0, p_0, x, c))

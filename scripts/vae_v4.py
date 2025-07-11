@@ -163,26 +163,28 @@ class HVAE(pl.LightningModule):
 
         # graph regularization
         gLoss = torch.tensor(0.0, device=z_k.device, dtype=z_k.dtype)
-        # Create a mapping from global dataset index to local batch index
-        global_to_local_idx = {
-            int(global_idx): local_idx for local_idx, global_idx in enumerate(obs_idx)
-        }
-        n_pairs_in_batch = 0
-        for i_local, i_global in enumerate(obs_idx):
-            i_global_int = int(i_global)
-            for j_global in obs_nei_idx[global_to_local_idx[i_global_int]]:
-                # Check if the neighbor is also in the current batch
-                # if j_global is -1, then obs i misses jth neghbor, so skip
-                if j_global < 0:
-                    continue
-                if j_global in global_to_local_idx:
-                    n_pairs_in_batch += 1
-                    j_local = global_to_local_idx[j_global]
-                    weight = obs_nei_conn[i_global_int, j_global]
-                    gLoss += weight * torch.sum((z_k[i_local] - z_k[j_local]) ** 2)
-        if n_pairs_in_batch > 0:
-            gLoss = gLoss / n_pairs_in_batch
-        gLoss = self.GraphRegWeight * gLoss
+        if self.GraphRegWeight > 0:
+            # Create a mapping from global dataset index to local batch index
+            global_to_local_idx = {
+                int(global_idx): local_idx
+                for local_idx, global_idx in enumerate(obs_idx)
+            }
+            n_pairs_in_batch = 0
+            for i_local, i_global in enumerate(obs_idx):
+                i_global_int = int(i_global)
+                for j_global in obs_nei_idx[global_to_local_idx[i_global_int]]:
+                    # Check if the neighbor is also in the current batch
+                    # if j_global is -1, then obs i misses jth neghbor, so skip
+                    if j_global < 0:
+                        continue
+                    if j_global in global_to_local_idx:
+                        n_pairs_in_batch += 1
+                        j_local = global_to_local_idx[j_global]
+                        weight = obs_nei_conn[i_global_int, j_global]
+                        gLoss += weight * torch.sum((z_k[i_local] - z_k[j_local]) ** 2)
+            if n_pairs_in_batch > 0:
+                gLoss = gLoss / n_pairs_in_batch
+            gLoss = self.GraphRegWeight * gLoss
 
         return (
             NLL_x

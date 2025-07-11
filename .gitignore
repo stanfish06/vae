@@ -8,6 +8,7 @@ data/
 wheels/
 *.egg-info
 *.ipynb
+*.h5ad
 
 # Virtual environments
 .venv

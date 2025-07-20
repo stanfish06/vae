@@ -9,6 +9,7 @@ wheels/
 *.egg-info
 *.ipynb
 *.h5ad
+*.png
 
 # Virtual environments
 .venv

@@ -10,6 +10,9 @@ dependencies = [
   "lightning",
   "numpy<2.0.0",
   "tensorboard>=2.19.0",
+  "scvelo>=0.3.3",
+  "cellrank>=2.0.7",
+  "zarr<3.0",
 ]
 
 [tool.uv.sources]

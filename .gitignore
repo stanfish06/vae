@@ -7,7 +7,6 @@ lightning_logs/
 data/
 wheels/
 *.egg-info
-*.ipynb
 *.h5ad
 *.png
 *.pkl

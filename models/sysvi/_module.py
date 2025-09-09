@@ -92,7 +92,7 @@ class SysVAE(BaseModuleClass, EmbeddingModuleMixin):
         n_hidden: int = 256,
         n_layers: int = 2,
         dropout_rate: float = 0.1,
-        out_var_mode: Literal["sample_feature", "feature"] = "feature",
+        out_var_mode: Literal["sample_feature", "feature"] = "sample_feature",
         encoder_decoder_kwargs: dict | None = None,
         embedding_kwargs: dict | None = None,
     ):
@@ -410,7 +410,7 @@ class SysVAE(BaseModuleClass, EmbeddingModuleMixin):
         generative_outputs: dict[str, torch.Tensor],
         kl_weight: float = 1.0,
         reconstruction_weight: float = 1.0,
-        z_distance_cycle_weight: float = 2.0,
+        z_distance_cycle_weight: float = 0.5,
         compute_cycle: bool = True,
     ) -> LossOutput:
         """Compute loss of forward pass.

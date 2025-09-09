@@ -1,5 +1,5 @@
 [tools]
-uv = "latest"
+uv = "0.8.15"
 
 [settings]
 python.uv_venv_auto = true

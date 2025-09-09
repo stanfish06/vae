@@ -1,0 +1,46 @@
+# SysVI vs VAE_v6 Analysis: Why SysVI Produces Fuzzy Output
+
+## Key Issues Causing Fuzzy Output & Variation Loss:
+
+### 1. Decoder Output Distribution
+- **Problem**: SysVI uses Gaussian distribution with fixed variance, which smooths discrete count data
+- **VAE_v6 Advantage**: Uses Negative Binomial distribution with learned dispersion (log_theta), better suited for scRNA-seq count data
+
+### 2. Loss Function Differences  
+- **Problem**: SysVI uses simple KL divergence + cycle consistency loss that can over-regularize
+- **VAE_v6 Advantage**: Hamiltonian dynamics with leapfrog steps preserves fine-grained structure through sophisticated sampling
+
+### 3. Cycle Consistency Over-regularization
+- **Problem**: MSE loss between latent representations (weight=2.0) forces similar embeddings across batches, removing biological variation
+- **Impact**: Loses cell-type specific patterns in favor of batch integration
+
+### 4. Variance Modeling
+- **Problem**: SysVI uses feature-level constant variance (var_mode="feature"), reducing expressiveness
+- **VAE_v6 Advantage**: Sample-specific variance via batch normalization and proper NB parameterization
+
+### 5. Prior Constraints
+- **Problem**: VampPrior with limited components (K=5) constrains latent space topology
+- **Impact**: May not capture full complexity of scRNA-seq data manifold
+
+## Specific Improvements for SysVI:
+
+### Immediate Fixes:
+1. **Reduce cycle consistency weight**: Change z_distance_cycle_weight from 2.0 to 0.5 (sysvi/_module.py:412)
+2. **Increase VampPrior components**: Change n_prior_components from 5 to 20+ (sysvi/_model.py:67)
+3. **Use sample-feature variance**: Set var_mode="sample_feature" instead of "feature" (sysvi/_module.py:139)
+
+### Major Architecture Changes:
+1. **Replace Gaussian with Negative Binomial**: Modify decoder to use count-appropriate distribution
+2. **Add batch normalization**: Implement extensive batch norm like VAE_v6 
+3. **Implement learnable dispersion**: Add gene-specific dispersion parameters
+
+### Training Strategy:
+1. **Reduce KL weight**: Lower during initial training phases
+2. **Add warmup schedule**: Gradually increase cycle consistency loss weight
+3. **Consider batch weighting**: Use inverse batch proportion weights
+
+## Root Cause:
+SysVI prioritizes batch integration over preserving biological variation, while VAE_v6 with Hamiltonian dynamics maintains finer detail through sophisticated sampling and appropriate count distribution modeling.
+
+## Recommendation:
+For scRNA-seq integration, consider adapting VAE_v6's Negative Binomial decoder and Hamiltonian sampling into SysVI framework, or reduce SysVI's regularization strength significantly.
